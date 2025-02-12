@@ -1,9 +1,18 @@
-from rest_framework import viewsets
-from rest_framework.filters import SearchFilter, OrderingFilter
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import IsAuthenticated
+import datetime
 
-from cinema.models import Genre, Actor, CinemaHall, Movie, MovieSession, Order
+from django.db.models import F, Count
+from rest_framework import viewsets
+from rest_framework.pagination import PageNumberPagination
+
+from cinema.models import (
+    Genre,
+    Actor,
+    CinemaHall,
+    Movie,
+    MovieSession,
+    Order,
+    Ticket
+)
 
 from cinema.serializers import (
     GenreSerializer,
@@ -14,67 +23,51 @@ from cinema.serializers import (
     MovieSessionListSerializer,
     MovieDetailSerializer,
     MovieSessionDetailSerializer,
-    MovieListSerializer, OrderSerializer,
+    MovieListSerializer,
+    OrderSerializer,
+    OrderListSerializer
 )
 
-class OrderPagination(PageNumberPagination):
-    page_size = 10
-    page_size_query_param = "page_size"
-    max_page_size = 100
-
-class OrderViewSet(viewsets.ModelViewSet):
-    queryset = Order.objects.all()
-    serializer_class = OrderSerializer
-    permission_classes = [IsAuthenticated]
-    pagination_class = OrderPagination
-
-    def get_queryset(self):
-        return Order.objects.filter(user=self.request.user)
 
 class GenreViewSet(viewsets.ModelViewSet):
     queryset = Genre.objects.all()
     serializer_class = GenreSerializer
-
-
 class ActorViewSet(viewsets.ModelViewSet):
     queryset = Actor.objects.all()
     serializer_class = ActorSerializer
-
-
 class CinemaHallViewSet(viewsets.ModelViewSet):
     queryset = CinemaHall.objects.all()
     serializer_class = CinemaHallSerializer
-
-
 class MovieViewSet(viewsets.ModelViewSet):
     queryset = Movie.objects.all()
     serializer_class = MovieSerializer
-
     def get_serializer_class(self):
         if self.action == "list":
             return MovieListSerializer
-
         if self.action == "retrieve":
             return MovieDetailSerializer
 
         return MovieSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = self.queryset
 
-        actors = self.request.query_params.get("actors", None)
-        if actors:
-            actor_ids = [int(id) for id in actors.split(",")]
-            queryset = queryset.filter(actors__id__in=actor_ids)
+        actors_filter = self.request.query_params.get("actors")
+        genres_filter = self.request.query_params.get("genres")
+        title_filter = self.request.query_params.get("title")
 
-        genres = self.request.query_params.get("genres", None)
-        if genres:
-            genre_ids = [int(id) for id in genres.split(",")]
-            queryset = queryset.filter(genres__id__in=genre_ids)
-
-        title = self.request.query_params.get("title", None)
-        if title:
-            queryset = queryset.filter(title__icontains=title)
+        if actors_filter:
+            actors_ids = [
+                int(actor_id) for actor_id in actors_filter.split(",")
+            ]
+            queryset = queryset.filter(actors__in=actors_ids)
+        if genres_filter:
+            genres_ids = [
+                int(genre_id) for genre_id in genres_filter.split(",")
+            ]
+            queryset = queryset.filter(genres__in=genres_ids)
+        if title_filter:
+            queryset = queryset.filter(title__icontains=title_filter)
 
         return queryset
 
@@ -82,25 +75,69 @@ class MovieViewSet(viewsets.ModelViewSet):
 class MovieSessionViewSet(viewsets.ModelViewSet):
     queryset = MovieSession.objects.all()
     serializer_class = MovieSessionSerializer
-
     def get_serializer_class(self):
         if self.action == "list":
             return MovieSessionListSerializer
-
         if self.action == "retrieve":
             return MovieSessionDetailSerializer
 
         return MovieSessionSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = self.queryset
 
-        date = self.request.query_params.get("date", None)
+        date = self.request.query_params.get("date")
+        movie_to_find = self.request.query_params.get("movie")
+        if movie_to_find:
+            queryset = queryset.filter(movie_id=int(movie_to_find))
+
         if date:
-            queryset = queryset.filter(show_time__date=date)
+            date_list = date.split("-")
+            format_date = datetime.datetime(
+                year=int(date_list[0]),
+                month=int(date_list[1]),
+                day=int(date_list[2])
+            )
+            queryset = queryset.filter(
+                show_time__year=format_date.year,
+                show_time__month=format_date.month,
+                show_time__day=format_date.day
+            )
 
-        movie_id = self.request.query_params.get("movie", None)
-        if movie_id:
-            queryset = queryset.filter(movie_id=movie_id)
+        if self.action == "list":
+            queryset = queryset.select_related("cinema_hall").annotate(
+                tickets_available=F(
+                    "cinema_hall__rows"
+                ) * F(
+                    "cinema_hall__seats_in_row"
+                ) - Count("tickets")
+            )
 
-        return queryset
+        return queryset.select_related("movie", "cinema_hall")
+
+
+class OrderSetPagination(PageNumberPagination):
+    page_size = 2
+    page_query_param = "page"
+    max_page_size = 5
+
+
+class OrderViewSet(viewsets.ModelViewSet):
+    queryset = Order.objects.all()
+    pagination_class = OrderSetPagination
+
+    def get_queryset(self):
+        queryset = self.queryset
+        return queryset.prefetch_related(
+            "tickets__movie_session",
+            "tickets__movie_session__movie",
+            "tickets__movie_session__cinema_hall"
+        ).filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return OrderListSerializer
+        return OrderSerializer
