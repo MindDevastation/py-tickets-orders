@@ -60,6 +60,11 @@ class MovieSession(models.Model):
     def __str__(self):
         return self.movie.title + " " + str(self.show_time)
 
+    @property
+    def taken_seats(self):
+        tickets = Ticket.objects.filter(movie_session=self)
+        return [{"row": ticket.row, "seat": ticket.seat} for ticket in tickets]
+
 
 class Order(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
